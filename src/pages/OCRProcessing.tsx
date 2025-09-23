@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-
+import { runOCR } from '../utils/ocr';
 import { useState } from "react"
 import { motion } from "framer-motion"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -38,76 +38,36 @@ interface ProcessedDocument {
     confidence: number
   }>
   uploadedAt: string
+  errorMessage?: string // add
 }
 
-const OCRProcessing = () => {
+export const OCRProcessing: React.FC = () => {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
-  const [processingProgress, setProcessingProgress] = useState(0)
-  const [processedDocuments, setProcessedDocuments] = useState<ProcessedDocument[]>([
-    {
-      id: "doc1",
-      filename: "fra_claim_001.pdf",
-      status: "completed",
-      extractedText:
-        "Forest Rights Act Claim Application\nApplicant Name: Ramesh Kumar\nVillage: Khargone\nDistrict: Khargone\nState: Madhya Pradesh\nClaim Type: Individual Forest Rights\nArea: 2.5 hectares\nSurvey Number: 123/4\nCoordinates: 22.7196°N, 75.8577°E",
-      entities: [
-        { type: "PERSON", value: "Ramesh Kumar", confidence: 0.95 },
-        { type: "LOCATION", value: "Khargone", confidence: 0.92 },
-        { type: "AREA", value: "2.5 hectares", confidence: 0.88 },
-        { type: "COORDINATES", value: "22.7196°N, 75.8577°E", confidence: 0.85 },
-      ],
-      uploadedAt: "2024-01-15 10:30:00",
-    },
-    {
-      id: "doc2",
-      filename: "survey_report_bastar.jpg",
-      status: "completed",
-      extractedText:
-        "Survey Report - Bastar District\nCommunity Forest Resource Claim\nVillage: Jagdalpur\nTotal Area: 45.2 hectares\nForest Type: Dense Forest\nBiodiversity Index: High\nWater Bodies: 3 ponds, 1 stream",
-      entities: [
-        { type: "LOCATION", value: "Bastar District", confidence: 0.94 },
-        { type: "LOCATION", value: "Jagdalpur", confidence: 0.91 },
-        { type: "AREA", value: "45.2 hectares", confidence: 0.89 },
-        { type: "FOREST_TYPE", value: "Dense Forest", confidence: 0.87 },
-      ],
-      uploadedAt: "2024-01-14 14:20:00",
-    },
-  ])
+  const [processingProgress, setProcessingProgress] = useState(0) // overall 0..100
+  const [processedDocuments, setProcessedDocuments] = useState<ProcessedDocument[]>([])
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files || [])
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []).filter(f => f.type.startsWith('image/'))
     setSelectedFiles(files)
   }
 
-  const processDocuments = async () => {
-    setIsProcessing(true)
-    setProcessingProgress(0)
-
-    // Simulate processing with progress updates
-    for (let i = 0; i <= 100; i += 10) {
-      setProcessingProgress(i)
-      await new Promise((resolve) => setTimeout(resolve, 200))
+  const extractEntities = (text: string): ProcessedDocument["entities"] => {
+    const entities: ProcessedDocument["entities"] = []
+    const push = (type: string, value?: string | null, confidence = 0.9) => {
+      if (value && value.trim()) entities.push({ type, value: value.trim(), confidence })
     }
-
-    // Add processed documents (simulation)
-    const newDocs: ProcessedDocument[] = selectedFiles.map((file, index) => ({
-      id: `doc_${Date.now()}_${index}`,
-      filename: file.name,
-      status: "completed" as const,
-      extractedText: `Extracted text from ${file.name}...\n\nThis is sample extracted text that would come from OCR processing of the uploaded document.`,
-      entities: [
-        { type: "PERSON", value: "Sample Name", confidence: 0.92 },
-        { type: "LOCATION", value: "Sample Village", confidence: 0.88 },
-        { type: "AREA", value: "Sample Area", confidence: 0.85 },
-      ],
-      uploadedAt: new Date().toLocaleString(),
-    }))
-
-    setProcessedDocuments((prev) => [...newDocs, ...prev])
-    setSelectedFiles([])
-    setIsProcessing(false)
-    setProcessingProgress(0)
+    const pick = (label: string) => {
+      const m = new RegExp(`${label}\\s*:\\s*([^\\n\\r]+)`, 'i').exec(text)
+      return m?.[1] ?? null
+    }
+    push("PERSON", pick("Applicant Name") || pick("Name"))
+    push("LOCATION", pick("Village"))
+    push("LOCATION", pick("District"))
+    push("STATE", pick("State"))
+    push("AREA", pick("Area"))
+    push("COORDINATES", pick("Coordinates"))
+    return entities
   }
 
   const getStatusColor = (status: string) => {
@@ -134,6 +94,52 @@ const OCRProcessing = () => {
       default:
         return <FileText className="w-4 h-4" />
     }
+  }
+
+  const processDocuments = async () => {
+    if (selectedFiles.length === 0) return
+    setIsProcessing(true)
+    setProcessingProgress(0)
+
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i]
+      const id = `doc_${Date.now()}_${i}`
+
+      setProcessedDocuments(prev => ([
+        {
+          id,
+          filename: file.name,
+          status: "processing",
+          extractedText: "",
+          entities: [],
+          uploadedAt: new Date().toLocaleString(),
+        },
+        ...prev,
+      ]))
+
+      try {
+        const text = await runOCR(file, (p) => {
+          const overall = Math.round(((i + p) / selectedFiles.length) * 100)
+          setProcessingProgress(overall)
+        })
+
+        const entities = extractEntities(text)
+        setProcessedDocuments(prev =>
+          prev.map(d => d.id === id ? { ...d, status: "completed", extractedText: text, entities } : d)
+        )
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error('OCR error', err)
+        setProcessedDocuments(prev =>
+          prev.map(d => d.id === id ? { ...d, status: "error", errorMessage: message } : d)
+        )
+      }
+    }
+
+    setProcessingProgress(100)
+    setIsProcessing(false)
+    setSelectedFiles([])
+    setTimeout(() => setProcessingProgress(0), 400)
   }
 
   return (
@@ -182,15 +188,15 @@ const OCRProcessing = () => {
                 <FileImage className="w-16 h-16 text-gray-400 mx-auto mb-4" />
                 <div className="space-y-2">
                   <Label htmlFor="file-upload" className="cursor-pointer">
-                    <div className="text-lg font-medium text-gray-700">Drop files here or click to browse</div>
-                    <div className="text-sm text-gray-500">Supports PDF, JPG, PNG, TIFF formats</div>
+                    <div className="text-lg font-medium text-gray-700">Drop images here or click to browse</div>
+                    <div className="text-sm text-gray-500">Supports JPG, PNG, TIFF</div>
                   </Label>
                   <Input
                     id="file-upload"
                     type="file"
                     multiple
-                    accept=".pdf,.jpg,.jpeg,.png,.tiff"
-                    onChange={handleFileUpload}
+                    accept="image/*,.jpg,.jpeg,.png,.tif,.tiff"
+                    onChange={handleFileChange}
                     className="hidden"
                   />
                 </div>
@@ -214,7 +220,7 @@ const OCRProcessing = () => {
               {isProcessing && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">Processing documents...</span>
+                    <span className="text-sm font-medium">Processing images...</span>
                     <span className="text-sm text-gray-500">{processingProgress}%</span>
                   </div>
                   <Progress value={processingProgress} className="w-full" />
@@ -228,9 +234,9 @@ const OCRProcessing = () => {
                   className="flex items-center space-x-2"
                 >
                   <Zap className="w-4 h-4" />
-                  <span>{isProcessing ? "Processing..." : "Process Documents"}</span>
+                  <span>{isProcessing ? "Processing..." : "Process Images"}</span>
                 </Button>
-                <Button variant="outline" disabled={selectedFiles.length === 0}>
+                <Button variant="outline" disabled={selectedFiles.length === 0 || isProcessing}>
                   <Eye className="w-4 h-4 mr-2" />
                   Preview
                 </Button>
@@ -311,6 +317,13 @@ const OCRProcessing = () => {
                           </div>
                         </TabsContent>
                       </Tabs>
+
+                      {/* Show error message if OCR failed */}
+                      {doc.status === "error" && doc.errorMessage && (
+                        <div className="mt-4 p-2 bg-red-100 text-red-800 rounded">
+                          <p className="text-sm font-medium">Error: {doc.errorMessage}</p>
+                        </div>
+                      )}
 
                       <div className="flex space-x-2 mt-4">
                         <Button variant="outline" size="sm">
