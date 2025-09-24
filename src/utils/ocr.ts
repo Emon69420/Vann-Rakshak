@@ -10,7 +10,7 @@ type OcrSpaceResponse = {
 const API_KEY =
   (typeof import.meta !== 'undefined' && (import.meta as any)?.env?.VITE_OCRSPACE_API_KEY) ||
   (typeof process !== 'undefined' && (process as any)?.env?.NEXT_PUBLIC_OCRSPACE_API_KEY) ||
-  '...' // fallback to the key you provided; prefer env vars in production
+  'K85513057188957' // fallback to the key you provided; prefer env vars in production
 
 export const runOCR = async (
   file: File,
